@@ -1,0 +1,19 @@
+services:
+  ros1:
+    user: "${UID:-1000}:${GID:-1000}"
+    build:
+      context: .
+      dockerfile: Dockerfile.ROS1
+    volumes:
+      - ../:/app/catkin_ws/src/HAAM_ros_pkg
+    group_add:
+      - plugdev
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    privileged: true
+    ipc: host
+    stdin_open: true
+    tty: true
+    network_mode: host
+    working_dir: /app/catkin_ws
+    command: bash -c "source /opt/ros/noetic/setup.bash && /bin/bash"

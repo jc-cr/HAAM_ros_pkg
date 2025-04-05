@@ -99,6 +99,7 @@ class DetectionProcessor:
         self.start_cmd_pub = rospy.Publisher("pp_start", Int32, queue_size=10)
         self.slow_cmd_pub = rospy.Publisher("pp_slow", Int32, queue_size=10)
         self.stop_cmd_pub = rospy.Publisher("pp_stop", Int32, queue_size=10)
+        self.state_pub = rospy.Publisher("/robot_state_update", Int32, queue_size=10)
         
         rospy.loginfo("Detection processor initialized with mode %d", self.mode)
     
@@ -157,16 +158,20 @@ class DetectionProcessor:
                 # SAFE - outside both zones
                 rospy.loginfo("Detection at depth %.1f mm: SAFE", depth_mm)
                 self.start_cmd_pub.publish(100)  # Full speed
+                self.state_pub.publish(HostState.EXECUTE.value)
+
                 
             elif safety_status == 1:
                 # SLOW_DOWN - in yellow zone
                 rospy.loginfo("Detection at depth %.1f mm: SLOW_DOWN", depth_mm)
                 self.slow_cmd_pub.publish(50)   # Reduced speed
+                self.state_pub.publish(HostState.HOLDING.value)
                 
             elif safety_status == 2:
                 # STOP - in red zone
                 rospy.loginfo("Detection at depth %.1f mm: STOP", depth_mm)
                 self.stop_cmd_pub.publish(0)    # Stop
+                self.state_pub.publish(HostState.STOPPED.value)
         
         # Cam pos 2, on arm centered in zones
         elif self.mode == 2:

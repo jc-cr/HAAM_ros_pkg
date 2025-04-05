@@ -5,7 +5,9 @@ services:
       context: .
       dockerfile: Dockerfile.ROS1
     volumes:
-      - ../:/app/catkin_ws/src/HAAM_ros_pkg
+      - ../:/app/catkin_ws/src/hamm_ros_pkg
+      - ../.ros_build/devel:/app/catkin_ws/devel
+      - ../.ros_build/build:/app/catkin_ws/build
     group_add:
       - plugdev
     devices:

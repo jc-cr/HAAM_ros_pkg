@@ -1,0 +1,5 @@
+<launch>
+  <node name="haam_nodes" pkg="haam_ros_pkg" type="haam_nodes.py" output="screen">
+    <param name="device_ip" value="10.10.10.1" />
+  </node>
+</launch>

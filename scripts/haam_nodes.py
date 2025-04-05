@@ -16,14 +16,13 @@ from rpc_client import DataSubscriber, HeartbeatPublisher, HostStatePublisher
 
 class RosWrapper:
     def __init__(self):
-        # Initialize ROS node
-        rospy.init_node('haam_nodes', anonymous=True)
         
         # Get device IP parameter
         self.device_ip = rospy.get_param('~haam_ip', '10.10.10.1')
         
         # Create instances of your existing classes
-        self.data_subscriber = DataSubscriber(ip=self.device_ip) self.host_state_manager = HostStatePublisher(ip=self.device_ip)
+        self.data_subscriber = DataSubscriber(ip=self.device_ip) 
+        self.host_state_manager = HostStatePublisher(ip=self.device_ip)
         self.heartbeat_publisher = HeartbeatPublisher(ip=self.device_ip)
         
         # Create publisher for detection depth
@@ -82,8 +81,6 @@ class RosWrapper:
 
 class DetectionProcessor:
     def __init__(self):
-        # Initialize ROS node
-        rospy.init_node('detection_processor', anonymous=True)
         
         # Mode based on camera position we are testing. should only be set in the launch
         self.mode = rospy.get_param('~detection_mode', 1)
@@ -118,12 +115,9 @@ class DetectionProcessor:
         a depth reading represents a point along the negative y-axis
         from the camera position.
         """
-        # For simplicity, we assume the detection is directly ahead of the camera
-        # The projection is (0, camera_y - depth)
-        # Alternate implementation could consider the angle of the camera if it's not exactly vertical
         return np.array([0, self.CAMERA_POSITION[1] - depth_mm])
     
-    def check_safety_zone_mode1(self, depth_mm):
+    def check_safety_zone(self, depth_mm):
         """
         Check which safety zone a detection is in based on its projected position.
         
@@ -157,7 +151,7 @@ class DetectionProcessor:
         
         # Cam position 1, where HAAM is at top of zone looking down
         if self.mode == 1:
-            safety_status = self.check_safety_zone_mode1(depth_mm)
+            safety_status = self.check_safety_zone(depth_mm)
             
             if safety_status == 0:
                 # SAFE - outside both zones
@@ -195,6 +189,9 @@ class DetectionProcessor:
         rospy.loginfo("Detection processor stopped")
 
 if __name__ == "__main__":
+
+    # Initialize ROS node
+    rospy.init_node('haam_nodes', anonymous=True)
 
     wrapper = RosWrapper()
     detection_processor = DetectionProcessor()

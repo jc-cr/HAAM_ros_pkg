@@ -23,6 +23,7 @@ from rpc_client import DataSubscriber, HeartbeatPublisher, HostStatePublisher
 
 class DataLogging:
     def __init__(self):
+
         # Ensure logs directory exists
         script_dir = os.path.dirname(os.path.abspath(__file__))
         package_dir = os.path.dirname(script_dir)  # Parent directory of scripts
@@ -200,8 +201,12 @@ class RosWrapper:
                         len(latest_data['depth_data'].get('depths', [])) > 0):
                         
                         depth = Float32(latest_data['depth_data']['depths'][0])
-                        self.depth_pub.publish(depth)
-                        rospy.loginfo(f"Published depth: {depth.data} mm")
+                        if depth.data > 0:
+                            self.depth_pub.publish(depth)
+                            rospy.logdebug(f"Published depth: {depth.data} mm")
+
+                        else:
+                            continue
                     
                     # Process frame data
                     if latest_data['frame'] is not None:
@@ -268,19 +273,50 @@ class RosWrapper:
         self.data_subscriber.stop_polling()
         rospy.loginfo("HAAM ROS services stopped")
 
-
-
 class DetectionProcessor:
     def __init__(self):
-        # Mode based on camera position we are testing. should only be set in the launch
-        self.mode = rospy.get_param('~detection_mode', 1)
+        # Get all parameters from ROS parameter server with defaults
+
+        # Mode based on camera position we are testing
+        self.mode = rospy.get_param('~detection_mode', 4)
         
-        # Define safety zones in mm
-        self.SLOW_DOWN_ZONE_SIZE = 3000  # 3m = 3000mm (yellow square)
-        self.STOP_ZONE_SIZE = 2000       # 2m = 2000mm (red square)
+        # Define safety zones in mm (base boundaries)
+        self.RED_BOUNDARY_X = rospy.get_param('~red_boundary_mm', 1000)
+        self.YELLOW_BOUNDARY_X = rospy.get_param('~yellow_boundary_mm', 1500)
         
-        # Camera position (at top of yellow square looking down into zones)
-        self.CAMERA_POSITION = None 
+        # Define camera heights for different views (in mm)
+        self.AERIAL_HEIGHT = rospy.get_param('~aerial_height_mm', 2000)
+        self.NORMAL_HEIGHT = rospy.get_param('~normal_height_mm', 1580)
+        self.GROUND_HEIGHT = rospy.get_param('~ground_height_mm', 400)
+        
+        # Current camera height (will be set based on mode)
+        self.camera_height = None
+        
+        # Hysteresis margin (in mm) - this creates a "dead zone" to prevent oscillation
+        self.HYSTERESIS_MARGIN = rospy.get_param('~hysteresis_margin_mm', 100)
+        
+        # Track current state to implement hysteresis
+        # 0 = SAFE, 1 = SLOW, 2 = STOP
+        self.current_state = 0  # Initialize to SAFE state
+        
+        # Initialize camera position based on mode
+        self._setup_camera_mode()
+        
+        # Calculate depth thresholds using the Euclidean distance formula
+        # depth = sqrt(x_position^2 + camera_height^2)
+        if self.mode in [1, 2, 3]:
+            # Calculate regular thresholds
+            self.red_threshold = np.sqrt(self.RED_BOUNDARY_X**2 + self.camera_height**2)
+            self.yellow_threshold = np.sqrt(self.YELLOW_BOUNDARY_X**2 + self.camera_height**2)
+            
+            # Calculate exit thresholds with hysteresis margin
+            self.red_exit_threshold = self.red_threshold + self.HYSTERESIS_MARGIN
+            self.yellow_exit_threshold = self.yellow_threshold + self.HYSTERESIS_MARGIN
+        elif self.mode == 4:  # Debug mode
+            self.red_threshold = 1000
+            self.yellow_threshold = 3000
+            self.red_exit_threshold = self.red_threshold + self.HYSTERESIS_MARGIN
+            self.yellow_exit_threshold = self.yellow_threshold + self.HYSTERESIS_MARGIN
         
         # Create subscriber for detection data
         self.depth_detection_sub = rospy.Subscriber("/detection_depth", Float32, self.process_detection_depth)
@@ -289,141 +325,153 @@ class DetectionProcessor:
         self.start_cmd_pub = rospy.Publisher("pp_start", Int32, queue_size=10)
         self.slow_cmd_pub = rospy.Publisher("pp_slow", Int32, queue_size=10)
         self.stop_cmd_pub = rospy.Publisher("pp_stop", Int32, queue_size=10)
-        self.state_pub = rospy.Publisher("/robot_state_update", Int32, queue_size=10)
+        self.state_pub = rospy.Publisher("robot_state_update", Int32, queue_size=10)
 
         self.debug_cmd_executed_pub = rospy.Publisher("cmd_executed_timestamp", Int64, queue_size=10)
         
         # Add timestamp publisher - ensure it's Int64
-        self.cmd_sent_pub = rospy.Publisher("/cmd_sent_timestamp", Int64, queue_size=10)
+        self.cmd_sent_pub = rospy.Publisher("cmd_sent_timestamp", Int64, queue_size=10)
         
-        rospy.loginfo("Detection processor initialized with mode %d", self.mode)
-
+        # Log the calculated thresholds for verification
+        self._log_thresholds()
+    
+    def _setup_camera_mode(self):
+        """Setup camera parameters based on selected mode"""
+        if self.mode == 1:  # Aerial view
+            self.camera_height = self.AERIAL_HEIGHT
+            rospy.loginfo("Mode 1: Aerial view camera (height: %d mm)", self.camera_height)
+        elif self.mode == 2:  # Normal view
+            self.camera_height = self.NORMAL_HEIGHT
+            rospy.loginfo("Mode 2: Normal view camera (height: %d mm)", self.camera_height)
+        elif self.mode == 3:  # Ground view
+            self.camera_height = self.GROUND_HEIGHT
+            rospy.loginfo("Mode 3: Ground view camera (height: %d mm)", self.camera_height)
+        elif self.mode == 4:  # Debug mode (using direct thresholds)
+            rospy.loginfo("Mode 4: Debug mode (using hardcoded thresholds)")
+            return
+        else:
+            rospy.logwarn("Unknown mode: %d. Defaulting to mode 1 (Aerial view)", self.mode)
+            self.mode = 1
+            self.camera_height = self.AERIAL_HEIGHT
+    
+    def _log_thresholds(self):
+        """Log the calculated depth thresholds for verification"""
+        if self.mode in [1, 2, 3]:
+            rospy.loginfo("===== CALCULATED DEPTH THRESHOLDS WITH HYSTERESIS =====")
+            rospy.loginfo("Camera height: %d mm", self.camera_height)
+            rospy.loginfo("RED zone boundary (x): %d mm", self.RED_BOUNDARY_X)
+            rospy.loginfo("YELLOW zone boundary (x): %d mm", self.YELLOW_BOUNDARY_X)
+            rospy.loginfo("Hysteresis margin: %d mm", self.HYSTERESIS_MARGIN)
+            rospy.loginfo("Calculation formula: depth = sqrt(x_boundary^2 + camera_height^2)")
+            rospy.loginfo("RED zone entry threshold: %.1f mm", self.red_threshold)
+            rospy.loginfo("RED zone exit threshold: %.1f mm", self.red_exit_threshold)
+            rospy.loginfo("YELLOW zone entry threshold: %.1f mm", self.yellow_threshold)
+            rospy.loginfo("YELLOW zone exit threshold: %.1f mm", self.yellow_exit_threshold)
+            rospy.loginfo("===================================================")
+        elif self.mode == 4:
+            rospy.loginfo("===== DEBUG MODE THRESHOLDS WITH HYSTERESIS =====")
+            rospy.loginfo("Hysteresis margin: %d mm", self.HYSTERESIS_MARGIN)
+            rospy.loginfo("RED zone entry threshold: %.1f mm", self.red_threshold)
+            rospy.loginfo("RED zone exit threshold: %.1f mm", self.red_exit_threshold)
+            rospy.loginfo("YELLOW zone entry threshold: %.1f mm", self.yellow_threshold)
+            rospy.loginfo("YELLOW zone exit threshold: %.1f mm", self.yellow_exit_threshold)
+            rospy.loginfo("===================================================")
+    
     def process_detection_depth(self, msg):
-        """Process incoming depth detection message"""
+        """Process incoming depth detection message with hysteresis"""
         depth_mm = msg.data  # Depth is already in mm
         
-        # Add debug output
-        rospy.logdebug(f"Processing detection at depth: {depth_mm} mm")
+        # Determine new state with hysteresis
+        new_state = self.determine_state_with_hysteresis(depth_mm)
         
-        # Initialize camera position based on mode
-        if self.mode == 1:
-            self.CAMERA_POSITION = np.array([0, 1500])  # [x, y] in mm
-        
-        # Cam position 1, where HAAM is at top of zone looking down
-        if self.mode == 1:
-            safety_status = self.check_safety_zone(depth_mm)
+        # Only take action if the state has changed
+        if new_state != self.current_state:
+            rospy.loginfo("State change: %d -> %d at depth %.1f mm", 
+                         self.current_state, new_state, depth_mm)
             
-            # Add more verbose output
-            rospy.logdebug(f"Safety status: {safety_status} (0=SAFE, 1=SLOW, 2=STOP)")
+            # Update current state
+            self.current_state = new_state
             
-            if safety_status == 0:
-                # SAFE - outside both zones
-                rospy.logdebug("Detection at depth %.1f mm: SAFE", depth_mm)
-                self.start_cmd_pub.publish(100)  # Full speed
-                self.state_pub.publish(HostState.EXECUTE.value)
-                
-            elif safety_status == 1:
-                # SLOW_DOWN - in yellow zone
-                rospy.logdebug("Detection at depth %.1f mm: SLOW_DOWN", depth_mm)
-                self.slow_cmd_pub.publish(50)   # Reduced speed
-                self.state_pub.publish(HostState.HOLDING.value)
-                
-            elif safety_status == 2:
-                # STOP - in red zone
-                rospy.logdebug("Detection at depth %.1f mm: STOP", depth_mm)
-                self.stop_cmd_pub.publish(0)    # Stop
-
-                self.state_pub.publish(HostState.STOPPED.value)
-
-
-                # Create timestamp for command sent
-                timestamp = rospy.Time.now().to_nsec()
-                self.cmd_sent_pub.publish(timestamp)
-                rospy.loginfo(f"Published command sent timestamp: {timestamp}")
-
-        
-        # Debug mode added from the full haam_nodes.py
-        elif self.mode == 4:
-            rospy.logdebug(f"Debug mode - depth: {depth_mm} mm")
-            if depth_mm > 3000:
-                # SAFE - outside both zones
+            # Take action based on new state
+            if new_state == 0:  # SAFE
                 rospy.loginfo("Detection at depth %.1f mm: SAFE", depth_mm)
                 self.start_cmd_pub.publish(100)  # Full speed
                 self.state_pub.publish(HostState.EXECUTE.value)
                 
-            elif depth_mm <= 3000 and depth_mm >= 1000:  # Fixed condition
-                # SLOW_DOWN - in yellow zone
+            elif new_state == 1:  # SLOW_DOWN
                 rospy.loginfo("Detection at depth %.1f mm: SLOW_DOWN", depth_mm)
-                self.slow_cmd_pub.publish(50)   # Reduced speed
+                self.slow_cmd_pub.publish(50)  # Reduced speed
                 self.state_pub.publish(HostState.HOLDING.value)
                 
-            elif depth_mm < 1000:
-                # STOP - in red zone
+            elif new_state == 2:  # STOP
                 rospy.loginfo("Detection at depth %.1f mm: STOP", depth_mm)
-                self.stop_cmd_pub.publish(0)    # Stop
+                self.stop_cmd_pub.publish(0)  # Stop
                 self.state_pub.publish(HostState.STOPPED.value)
-
+                
                 # Create timestamp for command sent
                 timestamp = rospy.Time.now().to_nsec()
                 self.cmd_sent_pub.publish(timestamp)
                 rospy.loginfo(f"Published command sent timestamp: {timestamp}")
-
-                # Simulate timestamp for robto execution
-
-                timestamp = rospy.Time.now().to_nsec()
-                self.debug_cmd_executed_pub.publish(timestamp)
-                rospy.loginfo(f"Published command sent timestamp: {timestamp}")
-
-
-            
-        
-        else:
-            rospy.logwarn(f"Unknown mode: {self.mode}")
-            
-
-
-    def check_point_in_square(self, point, half_size):
-        """Check if a point is inside a square centered at origin"""
-        x, y = point
-        return -half_size <= x <= half_size and -half_size <= y <= half_size
+                
+                # In debug mode, also publish execution timestamp
+                if self.mode == 4:
+                    timestamp = rospy.Time.now().to_nsec()
+                    self.debug_cmd_executed_pub.publish(timestamp)
+                    rospy.loginfo(f"Published command executed timestamp: {timestamp}")
     
-    def project_point_from_depth(self, depth_mm):
+    def determine_state_with_hysteresis(self, depth_mm):
+        """Determine safety state with hysteresis to prevent oscillation
+        
+        This function implements the following hysteresis logic:
+        1. If currently in SAFE state (0):
+           - Only transition to SLOW (1) if depth <= yellow_threshold
+           - Only transition to STOP (2) if depth <= red_threshold
+        
+        2. If currently in SLOW state (1):
+           - Transition to SAFE (0) only if depth > yellow_exit_threshold
+           - Transition to STOP (2) if depth <= red_threshold
+        
+        3. If currently in STOP state (2):
+           - Transition to SLOW (1) only if depth > red_exit_threshold
+           - Transition to SAFE (0) only if depth > yellow_exit_threshold
+        
+        Returns: 
+            0 - SAFE (outside both zones)
+            1 - SLOW_DOWN (in yellow zone) 
+            2 - STOP (in red zone)
         """
-        For mode 1, project the depth reading onto the workspace plane.
+        # Current state is SAFE (0)
+        if self.current_state == 0:
+            if depth_mm <= self.red_threshold:
+                return 2  # Go to STOP
+            elif depth_mm <= self.yellow_threshold:
+                return 1  # Go to SLOW
+            else:
+                return 0  # Stay in SAFE
         
-        Since the camera is at (0, 1500) looking into the workspace,
-        a depth reading represents a point along the negative y-axis
-        from the camera position.
-        """
-        return np.array([0, self.CAMERA_POSITION[1] - depth_mm])
-    
-    def check_safety_zone(self, depth_mm):
-        """
-        Check which safety zone a detection is in based on its projected position.
+        # Current state is SLOW (1)
+        elif self.current_state == 1:
+            if depth_mm <= self.red_threshold:
+                return 2  # Go to STOP
+            elif depth_mm > self.yellow_exit_threshold:
+                return 0  # Go to SAFE (requires crossing exit threshold)
+            else:
+                return 1  # Stay in SLOW
         
-        Args:
-            depth_mm: Depth measurement in mm from the camera
-            
-        Returns:
-            0: SAFE (outside both zones)
-            1: SLOW_DOWN (in yellow zone but not in red zone)
-            2: STOP (in red zone)
-        """
-        # Project the depth onto the workspace
-        point = self.project_point_from_depth(depth_mm)
+        # Current state is STOP (2)
+        elif self.current_state == 2:
+            if depth_mm > self.yellow_exit_threshold:
+                return 0  # Go directly to SAFE if well outside yellow zone
+            elif depth_mm > self.red_exit_threshold:
+                return 1  # Go to SLOW if outside red zone + hysteresis
+            else:
+                return 2  # Stay in STOP
         
-        # Check if point is in STOP zone (red square)
-        half_stop = self.STOP_ZONE_SIZE / 2
-        if self.check_point_in_square(point, half_stop):
-            return 2
-        
-        # Check if point is in SLOW_DOWN zone (yellow square)
-        half_slow = self.SLOW_DOWN_ZONE_SIZE / 2
-        if self.check_point_in_square(point, half_slow):
-            return 1
-        
-        # Outside both zones
+        # Fallback (should never reach here)
+        rospy.logwarn("Invalid current_state: %d. Defaulting to SAFE.", self.current_state)
         return 0
+
+
 
 
 if __name__ == "__main__":
@@ -431,6 +479,8 @@ if __name__ == "__main__":
     rospy.init_node('haam_nodes', anonymous=True, log_level=rospy.INFO)
     
     rospy.loginfo("Starting HAAM nodes")
+
+    log_data_flag = rospy.get_param('~log_data', 0)
     
     try:
         # Initialize components with more verbose output
@@ -440,8 +490,9 @@ if __name__ == "__main__":
         rospy.loginfo("Initializing DetectionProcessor...")
         detection_processor = DetectionProcessor()
         
-        rospy.loginfo("Initializing DataLogging...")
-        data_logger = DataLogging()
+        if log_data_flag:
+            rospy.loginfo("Initializing DataLogging...")
+            data_logger = DataLogging()
 
         # Start components
         rospy.loginfo("Starting RosWrapper services...")
@@ -455,4 +506,3 @@ if __name__ == "__main__":
         rospy.logerr(f"Error during HAAM nodes execution: {e}")
         import traceback
         rospy.logerr(traceback.format_exc())
-    # ...rest of the exception handling

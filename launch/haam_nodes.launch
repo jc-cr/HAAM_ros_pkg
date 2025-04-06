@@ -11,7 +11,7 @@
          3 = Ground view (leg level)
          4 = Debug mode (direct thresholds)
     -->
-    <param name="detection_mode" value="2" />
+    <param name="detection_mode" value="3" />
     
     <!-- Zone Boundary Configuration (mm) -->
     <param name="red_boundary_mm" value="1000" />
@@ -19,8 +19,8 @@
     
     <!-- Camera Height Configuration (mm) -->
     <param name="aerial_height_mm" value="2000" />
-    <param name="normal_height_mm" value="1580" />
-    <param name="ground_height_mm" value="400" />
+    <param name="normal_height_mm" value="1370" />
+    <param name="ground_height_mm" value="900" />
     
     <!-- Hysteresis Configuration (mm) -->
     <param name="hysteresis_margin_mm" value="100" />

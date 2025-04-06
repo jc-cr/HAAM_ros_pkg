@@ -1,7 +1,32 @@
 <launch>
+  <!-- Human-Aware Andon Module Configuration -->
   <node name="haam_nodes" pkg="haam_ros_pkg" type="haam_nodes.py" output="screen">
-    <param name="device_ip" value="10.10.10.1" />
+    <!-- Device and Core Configuration -->
+    <param name="haam_ip" value="10.10.10.1" />
+    <param name="log_data" value="1" />
+    
+    <!-- Detection Mode: 
+         1 = Aerial view (above human)
+         2 = Normal view (eye level)
+         3 = Ground view (leg level)
+         4 = Debug mode (direct thresholds)
+    -->
     <param name="detection_mode" value="2" />
-    <param name="log_data" value="0" />
+    
+    <!-- Zone Boundary Configuration (mm) -->
+    <param name="red_boundary_mm" value="1000" />
+    <param name="yellow_boundary_mm" value="1500" />
+    
+    <!-- Camera Height Configuration (mm) -->
+    <param name="aerial_height_mm" value="2000" />
+    <param name="normal_height_mm" value="1580" />
+    <param name="ground_height_mm" value="400" />
+    
+    <!-- Hysteresis Configuration (mm) -->
+    <param name="hysteresis_margin_mm" value="100" />
+    
+    <!-- Debug Mode Thresholds (only used if detection_mode=4) -->
+    <param name="debug_red_threshold_mm" value="1000" />
+    <param name="debug_yellow_threshold_mm" value="3000" />
   </node>
 </launch>

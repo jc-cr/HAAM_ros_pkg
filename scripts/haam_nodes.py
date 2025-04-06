@@ -24,8 +24,11 @@ from rpc_client import DataSubscriber, HeartbeatPublisher, HostStatePublisher
 class DataLogging:
     def __init__(self):
         # Ensure logs directory exists
-        self.base_log_dir = "logs"
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        package_dir = os.path.dirname(script_dir)  # Parent directory of scripts
+        self.base_log_dir = os.path.join(package_dir, "logs")
         os.makedirs(self.base_log_dir, exist_ok=True)
+        rospy.loginfo(f"Logging data to: {self.base_log_dir}")
         
         # Bridge for converting ROS images to OpenCV/PIL
         self.bridge = CvBridge()
@@ -181,7 +184,7 @@ class RosWrapper:
                 # Log heartbeat periodically
                 poll_count += 1
                 if poll_count % 20 == 0:  # Log every ~2 seconds
-                    rospy.loginfo(f"Worker thread alive, poll count: {poll_count}")
+                    rospy.logdebug(f"Worker thread alive, poll count: {poll_count}")
                 
                 # Get latest data with better error handling
                 try:
@@ -287,6 +290,8 @@ class DetectionProcessor:
         self.slow_cmd_pub = rospy.Publisher("pp_slow", Int32, queue_size=10)
         self.stop_cmd_pub = rospy.Publisher("pp_stop", Int32, queue_size=10)
         self.state_pub = rospy.Publisher("/robot_state_update", Int32, queue_size=10)
+
+        self.debug_cmd_executed_pub = rospy.Publisher("cmd_executed_timestamp", Int64, queue_size=10)
         
         # Add timestamp publisher - ensure it's Int64
         self.cmd_sent_pub = rospy.Publisher("/cmd_sent_timestamp", Int64, queue_size=10)
@@ -327,7 +332,15 @@ class DetectionProcessor:
                 # STOP - in red zone
                 rospy.logdebug("Detection at depth %.1f mm: STOP", depth_mm)
                 self.stop_cmd_pub.publish(0)    # Stop
+
                 self.state_pub.publish(HostState.STOPPED.value)
+
+
+                # Create timestamp for command sent
+                timestamp = rospy.Time.now().to_nsec()
+                self.cmd_sent_pub.publish(timestamp)
+                rospy.loginfo(f"Published command sent timestamp: {timestamp}")
+
         
         # Debug mode added from the full haam_nodes.py
         elif self.mode == 4:
@@ -349,14 +362,24 @@ class DetectionProcessor:
                 rospy.loginfo("Detection at depth %.1f mm: STOP", depth_mm)
                 self.stop_cmd_pub.publish(0)    # Stop
                 self.state_pub.publish(HostState.STOPPED.value)
+
+                # Create timestamp for command sent
+                timestamp = rospy.Time.now().to_nsec()
+                self.cmd_sent_pub.publish(timestamp)
+                rospy.loginfo(f"Published command sent timestamp: {timestamp}")
+
+                # Simulate timestamp for robto execution
+
+                timestamp = rospy.Time.now().to_nsec()
+                self.debug_cmd_executed_pub.publish(timestamp)
+                rospy.loginfo(f"Published command sent timestamp: {timestamp}")
+
+
+            
         
         else:
             rospy.logwarn(f"Unknown mode: {self.mode}")
             
-        # Create timestamp for command sent
-        timestamp = rospy.Time.now().to_nsec()
-        self.cmd_sent_pub.publish(timestamp)
-        rospy.loginfo(f"Published command sent timestamp: {timestamp}")
 
 
     def check_point_in_square(self, point, half_size):

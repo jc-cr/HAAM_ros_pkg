@@ -177,6 +177,7 @@ class HostStatePublisher:
 
 
 class DataSubscriber:
+
     def __init__(self, ip="10.10.10.1", poll_interval=0.1, debug=False):
         self.ip = ip
         self.poll_interval = poll_interval
@@ -225,23 +226,6 @@ class DataSubscriber:
             self.stop_flag = True
             self.poll_thread.join(timeout=2.0)
             self.logger.info("Stopped data polling")
-    
-    def _poll_thread(self):
-        """Background thread for polling logging data"""
-        self.logger.info("Polling thread started")
-        
-        while not self.stop_flag:
-            try:
-                data = self.fetch_logging_data()
-                if data:
-                    self.process_logging_data(data)
-                    self.received_count += 1
-                time.sleep(self.poll_interval)
-                    
-            except Exception as e:
-                self.error_count += 1
-                self.logger.error(f"Error in polling thread: {e}")
-                time.sleep(1.0)  # Longer delay on error
     
     def fetch_logging_data(self):
         """Fetch logging data from the device"""
@@ -380,6 +364,114 @@ class DataSubscriber:
         except Exception as e:
             self.logger.error(f"Error processing logging data: {e}")
     
+        
+    def get_latest_data(self):
+        """Get all latest detection data in a single synchronized call"""
+        # Get data under lock
+        with self.data_lock:
+            
+            # Create a copy of data under lock
+            depth_data = self.last_depth_data
+            detection_data = self.last_detection_data
+            timestamp = self.last_timestamp
+            inference_time = self.last_inference_time
+            depth_estimation_time = self.last_depth_estimation_time
+            system_state = self.last_system_state
+            camera_data = self.last_camera_data
+        
+        # Process frame outside the lock
+        frame = None
+        if camera_data:
+            try:
+                # Process the image data
+                if 'img_array' in camera_data and camera_data['img_array'] is not None:
+                    frame_array = camera_data['img_array'].copy()
+                else:
+                    # Fallback to processing bytes
+                    image_data = camera_data['img_bytes']
+                    width = camera_data['width']
+                    height = camera_data['height']
+                    frame_array = np.frombuffer(image_data, dtype=np.uint8).reshape((height, width, 3))
+                
+                # Draw detections if available
+                if detection_data and detection_data.get('count', 0) > 0:
+                    frame_array = self._draw_detections(frame_array.copy())
+                
+                # Convert to PIL Image
+                frame = Image.fromarray(frame_array)
+                
+            except Exception as e:
+                print(f"Error processing frame in get_latest_data: {e}")
+        
+        # Return all data
+        return {
+            'frame': frame,
+            'depth_data': depth_data,
+            'detection_data': detection_data,
+            'timestamp': timestamp,
+            'inference_time': inference_time,
+            'depth_estimation_time': depth_estimation_time,
+            'system_state': system_state
+        }
+
+    def _draw_detections(self, frame):
+        """Draw detection boxes and info on frame"""
+        try:
+            if not self.last_detection_data or self.last_detection_data.get('count', 0) == 0:
+                        # No detections to draw
+                        return frame
+
+            height, width = frame.shape[:2]
+            
+
+            for i, obj in enumerate(self.last_detection_data.get('objects', [])):
+
+                bbox = obj['bbox']
+
+                # Use absolute coordinates directly, just ensure they're in bounds
+                ymin = max(0, min(int(bbox['ymin']), height-1))
+                xmin = max(0, min(int(bbox['xmin']), width-1))
+                ymax = max(0, min(int(bbox['ymax']), height-1))
+                xmax = max(0, min(int(bbox['xmax']), width-1))
+                
+                # Draw bounding box
+                cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (0, 255, 0), 2)
+                
+                # Get depth if available
+                depth_text = ""
+                if self.last_depth_data and i < len(self.last_depth_data.get('depths', [])):
+                    depth = self.last_depth_data['depths'][i]
+                    depth_text = f"Dist: {int(depth)}mm"
+                
+                # Create label with ID, confidence, and depth
+                label = f"ID: {obj['id']}, Conf: {obj['score']:.2f}"
+                if depth_text:
+                    label += f", {depth_text}"
+                
+                # Draw label background
+                label_size, baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                cv2.rectangle(frame, 
+                              (xmin, ymin - label_size[1] - 10), 
+                              (xmin + label_size[0], ymin), 
+                              (0, 255, 0), 
+                              -1)
+                
+                # Draw label text
+                cv2.putText(frame, 
+                            label, 
+                            (xmin, ymin - 7), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 
+                            0.5, 
+                            (0, 0, 0), 
+                            1)
+            
+            return frame
+            
+        except Exception as e:
+            self.logger.error(f"Error drawing detections: {e}")
+            return frame
+
+        
     def _parse_detections(self, detection_bytes, count):
         """Parse binary detection data according to tensorflow::Object structure
         
@@ -446,6 +538,7 @@ class DataSubscriber:
             self.logger.error(f"Error parsing detection data: {e}")
             return {'count': 0, 'objects': []}
     
+
     def _parse_depths(self, depth_bytes, count):
         """Parse binary depth data"""
         try:
@@ -460,6 +553,7 @@ class DataSubscriber:
             self.logger.error(f"Error parsing depth data: {e}")
             return {'count': 0, 'depths': []}
     
+
     def _save_detection_data(self, timestamp, detection_data, depth_data):
         """Save detection and depth data to file"""
         try:
@@ -480,124 +574,22 @@ class DataSubscriber:
         except Exception as e:
             self.logger.error(f"Error saving detection data: {e}")
     
-    def toggle_recording(self):
-        """Toggle recording state"""
-        if self.is_recording:
-            self.is_recording = False
-            self.logger.info("Stopped recording")
-            return False
-        else:
-            # Create data directory
-            self.data_dir = os.path.join("logs", datetime.now().strftime("%Y%m%d_%H%M%S"))
-            os.makedirs(self.data_dir, exist_ok=True)
-            
-            # Setup CSV log file
-            self.csv_path = os.path.join(self.data_dir, "detection_log.csv")
-            with open(self.csv_path, 'w') as f:
-                f.write("timestamp,system_state,detection_count,inference_time,depth_estimation_time\n")
-            
-
-            self.is_recording = True
-            self.logger.info(f"Started recording to {self.data_dir}")
-            return True
     
-    def get_current_frame(self):
-        """Get current frame"""
-        with self.data_lock:
-            if not self.last_camera_data:
-                return None
-            
-            try:
-                # Check if we have pre-processed array
-                if 'img_array' in self.last_camera_data and self.last_camera_data['img_array'] is not None:
-                    frame = self.last_camera_data['img_array'].copy()
-                else:
-                    # Fallback to processing the bytes
-                    image_data = self.last_camera_data['img_bytes']
-                    width = self.last_camera_data['width']
-                    height = self.last_camera_data['height']
-                    
-                    try:
-                        frame = np.frombuffer(image_data, dtype=np.uint8).reshape((height, width, 3))
-                    except ValueError as e:
-                        self.logger.error(f"Error reshaping image data: {e}, data size={len(image_data)}, expected={(height*width*3)}")
-                        return None
-                
-                # If we have detection data, draw it on the frame
-                if self.last_detection_data and self.last_detection_data.get('count', 0) > 0:
-                    frame = self._draw_detections(frame.copy())
-                
-                # Convert to PIL Image for tkinter
-                return Image.fromarray(frame)
-            
-            except Exception as e:
-                self.logger.error(f"Error getting current frame: {e}", exc_info=True)
-                return None
+
+    def _poll_thread(self):
+        """Background thread for polling logging data"""
+        self.logger.info("Polling thread started")
         
-    def _draw_detections(self, frame):
-        """Draw detection boxes and info on frame"""
-        try:
-            if not self.last_detection_data or self.last_detection_data.get('count', 0) == 0:
-                        # No detections to draw
-                        return frame
-
-            height, width = frame.shape[:2]
-            
-
-            for i, obj in enumerate(self.last_detection_data.get('objects', [])):
-
-                bbox = obj['bbox']
-
-                # Use absolute coordinates directly, just ensure they're in bounds
-                ymin = max(0, min(int(bbox['ymin']), height-1))
-                xmin = max(0, min(int(bbox['xmin']), width-1))
-                ymax = max(0, min(int(bbox['ymax']), height-1))
-                xmax = max(0, min(int(bbox['xmax']), width-1))
-                
-                # Draw bounding box
-                cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (0, 255, 0), 2)
-                
-                # Get depth if available
-                depth_text = ""
-                if self.last_depth_data and i < len(self.last_depth_data.get('depths', [])):
-                    depth = self.last_depth_data['depths'][i]
-                    depth_text = f"Dist: {int(depth)}mm"
-                
-                # Create label with ID, confidence, and depth
-                label = f"ID: {obj['id']}, Conf: {obj['score']:.2f}"
-                if depth_text:
-                    label += f", {depth_text}"
-                
-                # Draw label background
-                label_size, baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                cv2.rectangle(frame, 
-                              (xmin, ymin - label_size[1] - 10), 
-                              (xmin + label_size[0], ymin), 
-                              (0, 255, 0), 
-                              -1)
-                
-                # Draw label text
-                cv2.putText(frame, 
-                            label, 
-                            (xmin, ymin - 7), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 
-                            0.5, 
-                            (0, 0, 0), 
-                            1)
-            
-            return frame
-            
-        except Exception as e:
-            self.logger.error(f"Error drawing detections: {e}")
-            return frame
+        while not self.stop_flag:
+            try:
+                data = self.fetch_logging_data()
+                if data:
+                    self.process_logging_data(data)
+                    self.received_count += 1
+                time.sleep(self.poll_interval)
+                    
+            except Exception as e:
+                self.error_count += 1
+                self.logger.error(f"Error in polling thread: {e}")
+                time.sleep(1.0)  # Longer delay on error
     
-    def get_status_info(self):
-        """Get current status information"""
-        with self.data_lock:
-            return {
-                'timestamp': self.last_timestamp,
-                'inference_time': self.last_inference_time,
-                'depth_estimation_time': self.last_depth_estimation_time,
-                'system_state': self.last_system_state,
-                'detection_count': self.last_detection_data.get('count', 0) if self.last_detection_data else 0
-            }

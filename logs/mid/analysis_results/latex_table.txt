@@ -1,0 +1,15 @@
+\begin{table}[h]
+\centering
+\caption{Stopping Time Statistics for mid}
+\begin{tabular}{|l|r|} \hline
+Metric & Value \\ \hline
+Number of samples & 26 \\
+Mean stopping time (ms) & 6.2490 \\
+Std Dev stopping time (ms) & 2.1319 \\
+Min stopping time (ms) & 2.9335 \\
+Max stopping time (ms) & 12.0327 \\
+Median stopping time (ms) & 5.8179 \\
+\hline
+\end{tabular}
+\label{tab:stopping_time_stats}
+\end{table}
